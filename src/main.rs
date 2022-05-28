@@ -27,8 +27,12 @@ const COL_7: u8 = 14;
 const COL_8: u8 = 15;
 
 fn main() -> Result<()> {
+    // Channel used to send time tick messages to the thread where the drawing
+    // will take place.
     let (tx, rx) = channel();
 
+    // We are using a new thread because we need to sleep on the main thread in
+    // order to animate the text scrolling
     thread::spawn(move || {
         let gpio = Gpio::new().unwrap();
 
@@ -38,6 +42,7 @@ fn main() -> Result<()> {
         )
         .unwrap();
 
+        // Used to calculate the transition for the animation
         let mut offset_x = 0u8;
 
         let character_style = MonoTextStyle::new(&FONT_5X8, true.into());
@@ -45,9 +50,9 @@ fn main() -> Result<()> {
         let text = Text::new("I bet you can't do this!", (0, 7).into(), character_style);
 
         loop {
-            match rx.try_recv() {
-                Ok(_) => offset_x = offset_x.wrapping_add(1),
-                _ => {}
+            // If we get a frame tick, then we increment the offset
+            if rx.try_recv().is_ok() {
+                offset_x = offset_x.wrapping_add(1);
             }
 
             let offset_x = offset_x as u32 % text.bounding_box().size.width;
@@ -59,8 +64,10 @@ fn main() -> Result<()> {
     });
 
     loop {
+        // Sleep until the next frame should be rendered, in this case, 5 frames per second
         thread::sleep(Duration::from_millis(1000 / 5));
 
+        // Notify the drawing thread that the next frame transition should be rendered
         tx.send(())?;
     }
 }
@@ -98,14 +105,23 @@ impl DrawTarget for LedMatrix {
     where
         I: IntoIterator<Item = Pixel<Self::Color>>,
     {
+        // Draw each new pixel
         for Pixel(p, c) in pixels {
+            // Only draw the pixel if it fits inside the 8x8 matrix
             if self.bounding_box().contains(p) {
+                // Convert the pixel color into a voltage for the LED
                 let level = match c {
                     BinaryColor::On => Level::High,
                     BinaryColor::Off => Level::Low,
                 };
 
-                // Turn on the pixel
+                // Because the Raspberry Pi 4 seems to not be able to drive the LEDs
+                // without creating hot spots (some LED's brighter than others),
+                // we want to light up only 1 LED at a time and at 50% brightness.
+                // We do this by a simple software PWM with a period of 10us and a
+                // duty cycle of 50%
+
+                // Turn on the LED
                 match p.x {
                     0 => self.col_1.write(!level),
                     1 => self.col_2.write(!level),
@@ -131,7 +147,7 @@ impl DrawTarget for LedMatrix {
 
                 std::thread::sleep(std::time::Duration::from_micros(5));
 
-                // Turn off the pixel
+                // Turn off the LED
                 match p.x {
                     0 => self.col_1.write(level),
                     1 => self.col_2.write(level),
